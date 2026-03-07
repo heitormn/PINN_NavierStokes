@@ -13,3 +13,4 @@ dist/
 
 # Env/config
 .env
+colab_train.ipynb
