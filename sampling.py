@@ -5,15 +5,8 @@ Collocation and boundary-point generation for the 2-D steady Navier-Stokes
 PINN on a [0,1] x [-0.5, 0.5] channel with a circular cylinder of radius 0.2
 centred at (0.5, 0).
 
-Adaptive interior sampling strategy
--------------------------------------
-Three populations are mixed to put more points where gradients are largest:
-
-  1. Uniform baseline  - coarse coverage of the whole domain
-  2. Near-cylinder ring - dense sampling around the cylinder
-       (annular region  R_inner < r < R_outer  from the cylinder centre)
-  3. Wake region -denser points in the downstream wake
-       (a rectangular strip behind the cylinder)
+Interior points are sampled uniformly; adaptive residual-based refinement
+is handled by the training loop (see train.py).
 
 All points inside the solid cylinder (r <= R_cyl) are rejected.
 """
@@ -55,96 +48,32 @@ def _sample_uniform(n: int, rng: np.random.Generator) -> np.ndarray:
     return np.concatenate(pts, axis=0)[:n]
 
 
-def _sample_near_cylinder(n: int, rng: np.random.Generator,
-                           r_inner: float = CYL_R,
-                           r_outer: float = 0.45) -> np.ndarray:
-    """
-    Sample n points in the annular ring [r_inner, r_outer] around the
-    cylinder centre.  Points that fall outside the channel are discarded.
-    """
-    pts = []
-    while len(pts) < n:
-        # uniform in area → r ~ sqrt(uniform) in [r_inner, r_outer]
-        u = rng.uniform(0, 1, size=n * 4)
-        r = np.sqrt(u * (r_outer ** 2 - r_inner ** 2) + r_inner ** 2)
-        theta = rng.uniform(0, 2 * np.pi, size=n * 4)
-        x = CYL_X + r * np.cos(theta)
-        y = CYL_Y + r * np.sin(theta)
-        batch = np.stack([x, y], axis=1)
-        # keep inside channel and outside cylinder
-        in_channel = (
-            (batch[:, 0] >= X_MIN) & (batch[:, 0] <= X_MAX) &
-            (batch[:, 1] >= Y_MIN) & (batch[:, 1] <= Y_MAX)
-        )
-        batch = batch[in_channel & _outside_cylinder(batch)]
-        pts.append(batch)
-    return np.concatenate(pts, axis=0)[:n]
-
-
-def _sample_wake(n: int, rng: np.random.Generator,
-                 x_start: float = CYL_X + CYL_R,
-                 x_end: float = X_MAX,
-                 y_half: float = 0.35) -> np.ndarray:
-    """
-    Sample n points in the rectangular wake strip behind the cylinder.
-    y_half controls how wide the wake strip is (centred at y=0).
-    """
-    pts = []
-    while len(pts) < n:
-        batch = rng.uniform(
-            [x_start, -y_half], [x_end, y_half],
-            size=(n * 3, 2),
-        )
-        batch = batch[_outside_cylinder(batch)]
-        pts.append(batch)
-    return np.concatenate(pts, axis=0)[:n]
-
-
 # ---------------------------------------------------------------------------
 # Main sampling function
 # ---------------------------------------------------------------------------
 
 def sample_collocation(
-    n_uniform: int = 7000,
-    n_near_cyl: int = 2000,
-    n_wake: int = 1500,
+    n_uniform: int = 11500,
     seed: int = 42,
-    r_near_inner: float = CYL_R,
-    r_near_outer: float = 0.45,
-    wake_x_start: float = CYL_X + CYL_R,
-    wake_y_half: float = 0.35,
     device: str = "cpu",
 ) -> torch.Tensor:
     """
-    Generate adaptive interior collocation points.
+    Generate uniform interior collocation points.
+    Adaptive residual-based refinement is done in the training loop.
 
     Parameters
     ----------
-    n_uniform    : number of background uniform points
-    n_near_cyl   : number of points in the near-cylinder annular region
-    n_wake       : number of points in the downstream wake strip
-    seed         : random seed for reproducibility
-    r_near_inner : inner radius for the near-cylinder ring (default = R_cyl)
-    r_near_outer : outer radius for the near-cylinder ring
-    wake_x_start : x-coordinate where the wake strip begins
-    wake_y_half  : half-width of the wake strip in y
-    device       : torch device string
+    n_uniform : number of uniform random points
+    seed      : random seed for reproducibility
+    device    : torch device string
 
     Returns
     -------
-    xy_col : Tensor[N, 2] with requires_grad=True, on `device`
-             N = n_uniform + n_near_cyl + n_wake
+    xy_col : Tensor[n_uniform, 2] with requires_grad=True, on `device`
     """
     rng = np.random.default_rng(seed)
-
-    pts_uniform = _sample_uniform(n_uniform, rng)
-    pts_near    = _sample_near_cylinder(n_near_cyl, rng, r_near_inner, r_near_outer)
-    pts_wake    = _sample_wake(n_wake, rng, wake_x_start, X_MAX, wake_y_half)
-
-    pts = np.concatenate([pts_uniform, pts_near, pts_wake], axis=0).astype(np.float32)
-
-    xy_col = torch.tensor(pts, dtype=torch.float32, device=device, requires_grad=True)
-    return xy_col
+    pts = _sample_uniform(n_uniform, rng).astype(np.float32)
+    return torch.tensor(pts, dtype=torch.float32, device=device, requires_grad=True)
 
 
 # ---------------------------------------------------------------------------

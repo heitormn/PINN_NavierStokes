@@ -15,30 +15,30 @@ Features
 import os
 import time
 import math
+import numpy as np
 import torch
 import matplotlib
 matplotlib.use('Agg')          # non-interactive backend (safe for scripts)
 import matplotlib.pyplot as plt
-from model import PINN, pinn_loss
-from sampling import sample_collocation, sample_all_boundaries
+from model import PINN, pinn_loss, ns_residuals
+from sampling import (sample_collocation, sample_all_boundaries,
+                      _outside_cylinder, X_MIN, X_MAX, Y_MIN, Y_MAX)
 
 # ---------------------------------------------------------------------------
 # Configuration — edit these to change the experiment
 # ---------------------------------------------------------------------------
 
 CFG = {
-    # Network architecture  [input, hidden..., output]
-    "layers"      : [2, 64, 64, 64, 64, 3],
+    # Network architecture  [input, hidden..., output]  (10 hidden layers × 50 neurons)
+    "layers"      : [2, 50, 50, 50, 50, 50, 50, 3],
 
     # Physics
     "Re"          : 1.0,
     "w_pde"       : 1.0,    # weight for PDE residual terms
-    "w_bc"        : 1.0,   # weight for BC terms (larger → enforce BCs tighter)
+    "w_bc"        : 10.0,   # weight for BC terms (larger → enforce BCs tighter)
 
     # Sampling counts
-    "n_uniform"   : 8000,
-    "n_near_cyl"  : 2000,
-    "n_wake"      : 1500,
+    "n_uniform"   : 8000,  # uniform baseline (replaces old near-cyl + wake buckets)
     "n_inflow"    : 200,
     "n_outflow"   : 200,
     "n_top"       : 150,
@@ -56,6 +56,11 @@ CFG = {
 
     # Gradient clipping (set to None to disable)
     "grad_clip"   : 1.0,    # max L2 norm of gradients
+
+    # Residual-based adaptive collocation resampling
+    "resample_every"  : 500,    # add new pts every N epochs (0 = disabled)
+    "n_residual_add"  : 2000,   # candidate pts to add per resample event
+    "n_col_max"       : 15000,  # hard cap on total collocation pts
 
     # I/O
     "save_every"  : 1000,   # save checkpoint every N epochs
@@ -123,6 +128,47 @@ class EarlyStopping:
 
 
 # ---------------------------------------------------------------------------
+# Residual-based adaptive collocation resampling
+# ---------------------------------------------------------------------------
+
+def adaptive_resample(model, xy_col, n_add, n_max, Re, device):
+    """
+    Add new collocation points near high-residual regions.
+    Existing points are importance-sampled by total PDE residual magnitude
+    and then jittered slightly to produce new candidate points.
+    The total point count is capped at n_max.
+    """
+    model.eval()
+    xy_eval = xy_col.detach().requires_grad_(True)
+    r_cont, r_xmom, r_ymom = ns_residuals(model, xy_eval, Re)
+    residuals = (
+        r_cont.detach().abs() + r_xmom.detach().abs() + r_ymom.detach().abs()
+    ).squeeze()
+    model.train()
+
+    probs = residuals.cpu().numpy().astype(np.float64)
+    probs /= probs.sum()
+    n_sample = min(n_add, xy_col.shape[0])
+    rng = np.random.default_rng()
+    idx = rng.choice(len(probs), size=n_sample, p=probs, replace=True)
+    anchors = xy_col.detach().cpu().numpy()[idx].astype(np.float32)
+    jitter  = rng.normal(0.0, 0.02, anchors.shape).astype(np.float32)
+    new_pts = anchors + jitter
+    new_pts[:, 0] = np.clip(new_pts[:, 0], X_MIN, X_MAX)
+    new_pts[:, 1] = np.clip(new_pts[:, 1], Y_MIN, Y_MAX)
+    new_pts = new_pts[_outside_cylinder(new_pts)]
+
+    if len(new_pts) == 0:
+        return xy_col
+
+    new_t    = torch.tensor(new_pts, dtype=torch.float32, device=device)
+    combined = torch.cat([xy_col.detach(), new_t], dim=0)
+    if combined.shape[0] > n_max:
+        combined = combined[-n_max:]   # keep freshest (most residual-guided) pts
+    return combined.requires_grad_(True)
+
+
+# ---------------------------------------------------------------------------
 # Training routine
 # ---------------------------------------------------------------------------
 
@@ -148,11 +194,9 @@ def train(cfg: dict = CFG):
     # ------------------------------------------------------------------
     print("\n  Sampling collocation and boundary points …")
     xy_col = sample_collocation(
-        n_uniform  = cfg["n_uniform"],
-        n_near_cyl = cfg["n_near_cyl"],
-        n_wake     = cfg["n_wake"],
-        seed       = cfg["seed"],
-        device     = device,
+        n_uniform = cfg["n_uniform"],
+        seed      = cfg["seed"],
+        device    = device,
     )
     bc = sample_all_boundaries(
         n_inflow  = cfg["n_inflow"],
@@ -222,6 +266,17 @@ def train(cfg: dict = CFG):
         optimiser.step()
         scheduler.step()
 
+        # --- residual-based adaptive resampling ---
+        resample_every = cfg.get("resample_every", 0)
+        if resample_every and epoch % resample_every == 0:
+            xy_col = adaptive_resample(
+                model, xy_col,
+                n_add  = cfg.get("n_residual_add", 2000),
+                n_max  = cfg.get("n_col_max", 15000),
+                Re     = cfg["Re"],
+                device = device,
+            )
+
         epochs_done = epoch
         total_loss  = loss_dict["total"]
 
@@ -230,7 +285,8 @@ def train(cfg: dict = CFG):
             loss_dict["pde/cont"] + loss_dict["pde/xmom"] + loss_dict["pde/ymom"]
         )
         bc_history.append(
-            loss_dict["bc/inflow_u"]     + loss_dict["bc/inflow_v"] +
+            loss_dict["bc/inflow_u_avg"] + loss_dict["bc/inflow_du_dx"] +
+            loss_dict["bc/inflow_dv_dx"] +
             loss_dict["bc/outlet_p"]     + loss_dict["bc/outlet_du_dx"] +
             loss_dict["bc/outlet_dv_dx"] +
             loss_dict["bc/top_u"]        + loss_dict["bc/top_v"] +
@@ -271,7 +327,9 @@ def train(cfg: dict = CFG):
                 loss_dict["bc/outlet_du_dx"] +
                 loss_dict["bc/outlet_dv_dx"]
             )
-            bc_inflow = loss_dict["bc/inflow_u"] + loss_dict["bc/inflow_v"]
+            bc_inflow = (loss_dict["bc/inflow_u_avg"] +
+                         loss_dict["bc/inflow_du_dx"] +
+                         loss_dict["bc/inflow_dv_dx"])
             bc_cyl    = loss_dict["bc/cyl_u"] + loss_dict["bc/cyl_v"]
 
             print(

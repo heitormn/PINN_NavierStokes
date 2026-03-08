@@ -24,8 +24,13 @@ class PINN(nn.Module):
             nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
             self.layers.append(layer)
-
+        # Input normalisation buffers  (domain: x∈[0,1], y∈[−0.5,0.5])
+        # z-score based on theoretical stats of a uniform distribution over each axis.
+        self.register_buffer('_x_mean', torch.tensor([0.5, 0.0]))
+        self.register_buffer('_x_std',  torch.tensor([0.2887, 0.2887]))
     def forward(self, x):
+        # z-score normalise inputs before the first layer
+        x = (x - self._x_mean) / self._x_std
         for layer in self.layers[:-1]:
             x = torch.tanh(layer(x))
         return self.layers[-1](x)
@@ -106,7 +111,7 @@ def ns_residuals(model, xy_col, Re=1.0):
 #
 # Boundary conditions
 # -------------------
-#   Inflow  (x = 0)               : u = 1,  v = 0
+#   Inflow  (x = 0)               : u = 1 − 4y²  (Poiseuille, u_max=1, ū=2/3),  v = 0
 #   Outflow (x = 1)               : p = 0,  ∂u/∂x = 0,  ∂v/∂x = 0
 #   Top wall    (y =  0.5)        : u = 0,  v = 0  (no-slip)
 #   Bottom wall (y = −0.5)        : u = 0,  v = 0  (no-slip)
@@ -149,11 +154,16 @@ def pinn_loss(model, xy_col, xy_in, xy_out, xy_top, xy_bot, xy_cyl, Re=1.0,
     loss_ymom  = mse(r_ymom, zeros(r_ymom.shape[0]))
 
     # ------------------------------------------------------------------
-    # 2. Inflow  (x = 0): u = 1, v = 0
+    # 2. Inflow (x = 0): u_avg = 2/3,  ∂u/∂x = 0,  ∂v/∂x = 0 v=0
     # ------------------------------------------------------------------
-    out_in       = model(xy_in)
-    loss_in_u    = mse(out_in[:, 0:1], torch.ones(xy_in.shape[0], 1, device=xy_in.device))
-    loss_in_v    = mse(out_in[:, 1:2], zeros(xy_in.shape[0]))
+    xy_in_g      = xy_in.detach().requires_grad_(True)
+    out_in       = model(xy_in_g)
+    loss_in_u    = (out_in[:, 0:1].mean() - 2.0 / 3.0) ** 2
+    loss_in_v =   mse(out_in[:, 1:2], zeros(xy_in.shape[0]))
+    du_dx_in     = grad(out_in[:, 0:1], xy_in_g)[:, 0:1]
+    dv_dx_in     = grad(out_in[:, 1:2], xy_in_g)[:, 0:1]
+    loss_in_du   = mse(du_dx_in, zeros(xy_in.shape[0]))
+    loss_in_dv   = mse(dv_dx_in, zeros(xy_in.shape[0]))
 
     # ------------------------------------------------------------------
     # 3. Outflow (x = 1): p = 0,  ∂u/∂x = 0,  ∂v/∂x = 0
@@ -191,11 +201,11 @@ def pinn_loss(model, xy_col, xy_in, xy_out, xy_top, xy_bot, xy_cyl, Re=1.0,
     # ------------------------------------------------------------------
     loss_pde = loss_cont + loss_xmom + loss_ymom
 
-    loss_bc  = (loss_in_u  + loss_in_v  +
+    loss_bc  = (loss_in_u  + loss_in_du + loss_in_dv +
                 loss_out_p + loss_out_du + loss_out_dv +
                 loss_top_u + loss_top_v  +
                 loss_bot_u + loss_bot_v  +
-                loss_cyl_u + loss_cyl_v)
+                loss_cyl_u + loss_cyl_v+loss_in_v)
 
     loss = w_pde * loss_pde + w_bc * loss_bc
 
@@ -204,8 +214,9 @@ def pinn_loss(model, xy_col, xy_in, xy_out, xy_top, xy_bot, xy_cyl, Re=1.0,
         "pde/cont"  : loss_cont.item(),
         "pde/xmom"  : loss_xmom.item(),
         "pde/ymom"  : loss_ymom.item(),
-        "bc/inflow_u"    : loss_in_u.item(),
-        "bc/inflow_v"    : loss_in_v.item(),
+        "bc/inflow_u_avg"  : loss_in_u.item(),
+        "bc/inflow_du_dx"  : loss_in_du.item(),
+        "bc/inflow_dv_dx"  : loss_in_dv.item(),
         "bc/outlet_p"    : loss_out_p.item(),
         "bc/outlet_du_dx": loss_out_du.item(),
         "bc/outlet_dv_dx": loss_out_dv.item(),
