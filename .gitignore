@@ -14,3 +14,4 @@ dist/
 # Env/config
 .env
 colab_train.ipynb
+kaggle_train.ipynb

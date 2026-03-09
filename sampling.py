@@ -2,24 +2,18 @@
 sampling.py
 -----------
 Collocation and boundary-point generation for the 2-D steady Navier-Stokes
-PINN on a [0,1] x [-0.5, 0.5] channel with a circular cylinder of radius 0.2
-centred at (0.5, 0).
+PINN on a [0,1.2] x [-0.5, 0.5] channel with a circular cylinder of radius 0.08
+centred at (0.3, 0).
 
-Adaptive interior sampling strategy
--------------------------------------
-Three populations are mixed to put more points where gradients are largest:
-
-  1. Uniform baseline  - coarse coverage of the whole domain
-  2. Near-cylinder ring - dense sampling around the cylinder
-       (annular region  R_inner < r < R_outer  from the cylinder centre)
-  3. Wake region -denser points in the downstream wake
-       (a rectangular strip behind the cylinder)
-
+Interior sampling strategy:
+- Uniform random sampling across the entire domain, excluding the cylinder.
+- Adaptive resampling based on PDE residuals: periodically add points in regions where the current model has high errors.
 All points inside the solid cylinder (r <= R_cyl) are rejected.
 """
 
 import numpy as np
 import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Circle
@@ -27,7 +21,7 @@ from matplotlib.patches import Circle
 # ---------------------------------------------------------------------------
 # Problem geometry constants
 # ---------------------------------------------------------------------------
-X_MIN, X_MAX = 0.0, 1.0
+X_MIN, X_MAX = 0.0, 1.2
 Y_MIN, Y_MAX = -0.5, 0.5
 CYL_X, CYL_Y, CYL_R = 0.3, 0.0, 0.08   # cylinder centre and radius
 
@@ -45,55 +39,10 @@ def _outside_cylinder(pts: np.ndarray, safety: float = 1e-3) -> np.ndarray:
 def _sample_uniform(n: int, rng: np.random.Generator) -> np.ndarray:
     """Draw n uniform random points from the bounding box; reject inside cyl."""
     pts = []
-    while len(pts) < n:
+    while sum(len(p) for p in pts) < n:
         batch = rng.uniform(
             [X_MIN, Y_MIN], [X_MAX, Y_MAX],
             size=(n * 3, 2),          # oversample to compensate for rejections
-        )
-        batch = batch[_outside_cylinder(batch)]
-        pts.append(batch)
-    return np.concatenate(pts, axis=0)[:n]
-
-
-def _sample_near_cylinder(n: int, rng: np.random.Generator,
-                           r_inner: float = CYL_R,
-                           r_outer: float = 0.45) -> np.ndarray:
-    """
-    Sample n points in the annular ring [r_inner, r_outer] around the
-    cylinder centre.  Points that fall outside the channel are discarded.
-    """
-    pts = []
-    while len(pts) < n:
-        # uniform in area → r ~ sqrt(uniform) in [r_inner, r_outer]
-        u = rng.uniform(0, 1, size=n * 4)
-        r = np.sqrt(u * (r_outer ** 2 - r_inner ** 2) + r_inner ** 2)
-        theta = rng.uniform(0, 2 * np.pi, size=n * 4)
-        x = CYL_X + r * np.cos(theta)
-        y = CYL_Y + r * np.sin(theta)
-        batch = np.stack([x, y], axis=1)
-        # keep inside channel and outside cylinder
-        in_channel = (
-            (batch[:, 0] >= X_MIN) & (batch[:, 0] <= X_MAX) &
-            (batch[:, 1] >= Y_MIN) & (batch[:, 1] <= Y_MAX)
-        )
-        batch = batch[in_channel & _outside_cylinder(batch)]
-        pts.append(batch)
-    return np.concatenate(pts, axis=0)[:n]
-
-
-def _sample_wake(n: int, rng: np.random.Generator,
-                 x_start: float = CYL_X + CYL_R,
-                 x_end: float = X_MAX,
-                 y_half: float = 0.35) -> np.ndarray:
-    """
-    Sample n points in the rectangular wake strip behind the cylinder.
-    y_half controls how wide the wake strip is (centred at y=0).
-    """
-    pts = []
-    while len(pts) < n:
-        batch = rng.uniform(
-            [x_start, -y_half], [x_end, y_half],
-            size=(n * 3, 2),
         )
         batch = batch[_outside_cylinder(batch)]
         pts.append(batch)
@@ -105,46 +54,93 @@ def _sample_wake(n: int, rng: np.random.Generator,
 # ---------------------------------------------------------------------------
 
 def sample_collocation(
-    n_uniform: int = 7000,
-    n_near_cyl: int = 2000,
-    n_wake: int = 1500,
+    n_uniform: int = 30000,
     seed: int = 42,
-    r_near_inner: float = CYL_R,
-    r_near_outer: float = 0.45,
-    wake_x_start: float = CYL_X + CYL_R,
-    wake_y_half: float = 0.35,
     device: str = "cpu",
 ) -> torch.Tensor:
     """
-    Generate adaptive interior collocation points.
+    Generate uniform interior collocation points (cylinder excluded).
 
     Parameters
     ----------
-    n_uniform    : number of background uniform points
-    n_near_cyl   : number of points in the near-cylinder annular region
-    n_wake       : number of points in the downstream wake strip
-    seed         : random seed for reproducibility
-    r_near_inner : inner radius for the near-cylinder ring (default = R_cyl)
-    r_near_outer : outer radius for the near-cylinder ring
-    wake_x_start : x-coordinate where the wake strip begins
-    wake_y_half  : half-width of the wake strip in y
-    device       : torch device string
+    n_uniform : number of uniform random points
+    seed      : random seed for reproducibility
+    device    : torch device string
 
     Returns
     -------
-    xy_col : Tensor[N, 2] with requires_grad=True, on `device`
-             N = n_uniform + n_near_cyl + n_wake
+    xy_col : Tensor[n_uniform, 2] with requires_grad=True, on `device`
     """
     rng = np.random.default_rng(seed)
+    pts = _sample_uniform(n_uniform, rng).astype(np.float32)
+    return torch.tensor(pts, dtype=torch.float32, device=device, requires_grad=True)
 
-    pts_uniform = _sample_uniform(n_uniform, rng)
-    pts_near    = _sample_near_cylinder(n_near_cyl, rng, r_near_inner, r_near_outer)
-    pts_wake    = _sample_wake(n_wake, rng, wake_x_start, X_MAX, wake_y_half)
 
-    pts = np.concatenate([pts_uniform, pts_near, pts_wake], axis=0).astype(np.float32)
+def adaptive_resample(
+    model: nn.Module,
+    xy_col: torch.Tensor,
+    cfg: dict,
+    device: str,
+    epoch: int,
+) -> torch.Tensor:
+    """
+    Residual-guided adaptive resampling.
 
-    xy_col = torch.tensor(pts, dtype=torch.float32, device=device, requires_grad=True)
-    return xy_col
+    Evaluates the PDE residuals on a fresh candidate pool and appends the
+    ``cfg['resample_add']`` highest-error points to the current collocation
+    set, capping the total at ``cfg['resample_max']``.
+
+    Parameters
+    ----------
+    model  : current PINN (any nn.Module that outputs [u, v, p])
+    xy_col : current collocation tensor  [N, 2]  (requires_grad=True)
+    cfg    : config dict with keys: resample_add, resample_max, seed, rho, mu
+    device : torch device string
+    epoch  : current training epoch (used to vary the candidate pool)
+
+    Returns
+    -------
+    xy_col : updated collocation tensor  [N', 2]  (requires_grad=True)
+             If already at cap, the original tensor is returned unchanged.
+    """
+    # Lazy import to avoid circular dependency (model imports sampling)
+    from model import ns_residuals
+
+    n_current = xy_col.shape[0]
+    if n_current >= cfg['resample_max']:
+        return xy_col
+
+    n_add = min(cfg['resample_add'], cfg['resample_max'] - n_current)
+
+    # Draw a fresh candidate pool (5× oversampled for coverage)
+    rng      = np.random.default_rng(cfg['seed'] + epoch)
+    cands_np = _sample_uniform(n_add * 5, rng).astype(np.float32)
+    xy_cand  = torch.tensor(cands_np, dtype=torch.float32,
+                             device=device, requires_grad=True)
+
+    # Evaluate PDE residuals at candidates
+    was_training = model.training
+    model.eval()
+    r_cont, r_xmom, r_ymom = ns_residuals(model, xy_cand,
+                                           rho=cfg['rho'], mu=cfg['mu'])
+    res_mag = (
+        r_cont.detach() ** 2 +
+        r_xmom.detach() ** 2 +
+        r_ymom.detach() ** 2
+    ).squeeze()
+    if was_training:
+        model.train()
+
+    # Select the top-n_add highest-residual candidates
+    _, idx   = torch.topk(res_mag, n_add)
+    selected = cands_np[idx.cpu().numpy()]
+
+    # Merge with existing points and return a fresh requires_grad tensor
+    merged = np.concatenate(
+        [xy_col.detach().cpu().numpy(), selected], axis=0
+    )
+    return torch.tensor(merged, dtype=torch.float32,
+                         device=device, requires_grad=True)
 
 
 # ---------------------------------------------------------------------------
@@ -164,16 +160,13 @@ def sample_inflow(n: int = 200, seed: int = 0, device: str = "cpu") -> torch.Ten
 
 def sample_outflow(n: int = 200, seed: int = 1, device: str = "cpu") -> torch.Tensor:
     """
-    Outflow boundary: x = 1,  y ~ uniform in [Y_MIN, Y_MAX].
-    BC: p = 0,  du/dx = 0,  dv/dx = 0.
-    Returned tensor has requires_grad=True (needed for du/dx residual).
+    Outflow boundary: x = X_MAX (1.2),  y ~ uniform in [Y_MIN, Y_MAX].
+    BC enforced in loss: p_avg = 0,  v = 0  (u·t = 0).
     """
     rng = np.random.default_rng(seed)
     y  = rng.uniform(Y_MIN, Y_MAX, size=(n, 1)).astype(np.float32)
-    x  = np.ones_like(y)
-    return torch.tensor(
-        np.hstack([x, y]), dtype=torch.float32, device=device, requires_grad=True
-    )
+    x  = np.full_like(y, X_MAX)
+    return torch.tensor(np.hstack([x, y]), dtype=torch.float32, device=device)
 
 
 def sample_top_wall(n: int = 150, seed: int = 2, device: str = "cpu") -> torch.Tensor:
@@ -337,15 +330,11 @@ def visualize_points(
 
 
 # ---------------------------------------------------------------------------
-# Quick self-test / demo
+# Small demo when run as a script
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("Generating collocation points …")
-    xy_col = sample_collocation(
-        n_uniform=4000,
-        n_near_cyl=2000,
-        n_wake=1500,
-    )
+    xy_col = sample_collocation(n_uniform=30000)
     print(f"  Interior collocation: {xy_col.shape[0]} pts")
 
     print("Generating boundary points …")
@@ -359,5 +348,8 @@ if __name__ == "__main__":
     for k, v in bc.items():
         print(f"  {k:10s}: {v.shape[0]} pts")
 
-    print("Plotting …")
+    print("\nadaptive_resample is available — import and call it from the")
+    print("training loop with a trained model to add high-residual points.")
+
+    print("\nPlotting …")
     visualize_points(xy_col, bc)

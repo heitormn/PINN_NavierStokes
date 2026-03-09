@@ -17,28 +17,26 @@ import time
 import math
 import torch
 import matplotlib
-matplotlib.use('Agg')          # non-interactive backend (safe for scripts)
+matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 from model import PINN, pinn_loss
 from sampling import sample_collocation, sample_all_boundaries
 
 # ---------------------------------------------------------------------------
-# Configuration — edit these to change the experiment
+# Configuration
 # ---------------------------------------------------------------------------
 
 CFG = {
     # Network architecture  [input, hidden..., output]
-    "layers"      : [2, 64, 64, 64, 64, 3],
+    'layers'      : [2, 50, 50, 50, 50, 50, 50,50,50, 3],
 
     # Physics
     "Re"          : 1.0,
-    "w_pde"       : 1.0,    # weight for PDE residual terms
-    "w_bc"        : 1.0,   # weight for BC terms (larger → enforce BCs tighter)
+    "w_pde"       : 1.0,    
+    "w_bc"        : 10,   
 
     # Sampling counts
-    "n_uniform"   : 8000,
-    "n_near_cyl"  : 2000,
-    "n_wake"      : 1500,
+    "n_uniform"   : 30000,
     "n_inflow"    : 200,
     "n_outflow"   : 200,
     "n_top"       : 150,
@@ -46,20 +44,20 @@ CFG = {
     "n_cyl"       : 300,
 
     # Training
-    "epochs"      : 10000,
+    "epochs"      : 25000,
     "lr"          : 1e-3,
-    "lr_min"      : 4e-6,   # cosine annealing lower bound
+    "lr_min"      : 4e-6, 
 
     # Early stopping
-    "patience"    : 500,   # epochs without improvement before stopping
-    "min_delta"   : 1e-7,   # minimum decrease to count as improvement
+    "patience"    : 5000,
+    "min_delta"   : 1e-7,  
 
     # Gradient clipping (set to None to disable)
-    "grad_clip"   : 1.0,    # max L2 norm of gradients
+    "grad_clip"   : 1.0,   
 
     # I/O
-    "save_every"  : 1000,   # save checkpoint every N epochs
-    "print_every" : 100,    # print progress every N epochs
+    "save_every"  : 1000,  
+    "print_every" : 100,  
     "models_dir"  : "models",
 
     # Device  ("cuda" | "cpu" | "mps")
@@ -149,8 +147,6 @@ def train(cfg: dict = CFG):
     print("\n  Sampling collocation and boundary points …")
     xy_col = sample_collocation(
         n_uniform  = cfg["n_uniform"],
-        n_near_cyl = cfg["n_near_cyl"],
-        n_wake     = cfg["n_wake"],
         seed       = cfg["seed"],
         device     = device,
     )
