@@ -69,9 +69,9 @@ u\frac{\partial v}{\partial x} + v\frac{\partial v}{\partial y} + \frac{\partial
 
 where $\nu = \mu/\rho$ is the kinematic viscosity and $(u, v, p)$ are the two velocity
 components and pressure.
-
 All derivatives are computed exactly via automatic differentiation through the neural
 network.
+
 ---
 
 ## 3. Boundary Conditions
@@ -131,8 +131,8 @@ which improves gradient flow through the network.
 | Activation | `tanh` |
 | Total parameters | ~18,000 |
 
-`tanh` is preferred over ReLU in PINNs because it is infinitely differentiable —
-a requirement for computing second-order partial derivatives via autograd.
+`tanh` is preferred over ReLU in PINNs because it is infinitely differentiable,
+which is convenient for computing second-order partial derivatives via autograd.
 
 ---
 
@@ -168,7 +168,7 @@ This focuses computational effort on regions where the network is struggling mos
 ### Early Stopping
 
 Training halts automatically if the total loss does not improve by more than
-$10^{-7}$ for 50,000 consecutive epochs.
+$10^{-7}$ for 5,000 consecutive epochs.
 
 ### Checkpointing
 
@@ -200,7 +200,7 @@ Three error metrics are computed per field:
 | Metric | Formula |
 |---|---|
 | Absolute L2 error | $\sqrt{\text{mean}(Q_{\text{PINN}} - Q_{\text{CFD}})^2}$ |
-| Relative L2 error | $\|Q_{\text{PINN}} - Q_{\text{CFD}}\|_2 \;/\; \|Q_{\text{CFD}}\|_2$ |
+| Relative L2 error | $\frac{\|Q_{\text{PINN}} - Q_{\text{CFD}}\|_2}{\|Q_{\text{CFD}}\|_2}$ |
 
 ---
 
@@ -213,18 +213,20 @@ PINN_NavierStoke/
 ├── sampling.py          # Collocation & BC point generation, adaptive resampling
 ├── train.py             # Training loop (local GPU/CPU)
 ├── eval.py              # Evaluation, plotting, COMSOL comparison
-│
-├── kaggle_train.ipynb   # Self-contained Kaggle notebook (train + eval)
-├── colab_train.ipynb    # Self-contained Colab notebook
-│
 ├── requirements.txt     # Python dependencies
 │
-└── models/
-    ├── best_model.pt                  # Best checkpoint (lowest loss)
-    ├── checkpoint_epoch001000.pt      # Periodic checkpoints
-    ├── ...
+├── models/
+│   ├── best_model.pt                  # Best checkpoint (lowest loss)
+│   └── checkpoint_epochXXXXXX.pt      # Periodic checkpoints
+│
+└── images/
+    ├── geometry_domain.png            # Domain schematic
     ├── loss_curve.png                 # Total loss curve
-    └── loss_curve_components.png      # PDE vs BC loss curves
+    ├── loss_curve_components.png      # PDE vs BC loss curves
+    ├── eval_streamlines.png           # Streamlines plot
+    ├── comparison_u.png               # u velocity comparison
+    ├── comparison_v.png               # v velocity comparison
+    └── comparison_p.png               # Pressure comparison
 ```
 
 ---
@@ -236,9 +238,6 @@ PINN_NavierStoke/
 ```bash
 pip install -r requirements.txt
 ```
-
-> **GPU strongly recommended.** On CPU, 10,000 epochs with 30,000 collocation
-> points takes several hours. With a modern GPU it runs in minutes.
 
 ---
 
@@ -267,12 +266,6 @@ CFG = {
 Checkpoints are written to `models/` every `save_every` epochs.
 
 ---
-
-### Train on Kaggle / Colab
-
-Open `kaggle_train.ipynb` on [Kaggle](https://www.kaggle.com) (free GPU) or
-`colab_train.ipynb` on [Google Colab](https://colab.research.google.com) (free GPU)
-and run all cells. Both notebooks are fully self-contained.
 
 ---
 
@@ -310,7 +303,7 @@ Training is monitored with three loss signals saved at the end of each run:
 
 **Total loss** (log scale):
 
-![Total loss curve](models/loss_curve%20(1).png)
+![Total loss curve](images/loss_curve%20(1).png)
 
 The steep initial descent reflects the network quickly learning the dominant flow
 features (inflow profile, pressure gradient). The slower tail corresponds to the
@@ -319,7 +312,7 @@ gradients are steepest.
 
 **PDE residual vs. BC loss** (log scale):
 
-![Loss components](models/loss_curve_components%20(1).png)
+![Loss components](images/loss_curve_components%20(1).png)
 
 The BC loss typically converges faster because it is a simpler, pointwise
 constraint. The PDE loss decays more slowly as it requires the network to
