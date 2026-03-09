@@ -80,7 +80,7 @@ Five boundary segments are enforced during training:
 
 | Boundary | Location | Condition | Description |
 |---|---|---|---|
-| **Inflow** |  $u = 0.3(1 - 4y^2),\ v = 0$ | parabolic velocity profile |
+| **Inflow** | $x = 0$ | $u = 0.3(1 - 4y^2),\ v = 0$ | Parabolic velocity profile ($U_{\max} = 0.3$, $U_{\text{avg}} = 0.2$) |
 | **Outflow** | $x = 1.2$ | $\bar{p} = 0,\ v = 0$ | Zero mean pressure; no transverse flow |
 | **Top wall** | $y = +0.5$ | $u = 0,\ v = 0$ | No-slip |
 | **Bottom wall** | $y = -0.5$ | $u = 0,\ v = 0$ | No-slip |
@@ -200,7 +200,7 @@ Three error metrics are computed per field:
 | Metric | Formula |
 |---|---|
 | Absolute L2 error | $\sqrt{\text{mean}(Q_{\text{PINN}} - Q_{\text{CFD}})^2}$ |
-| Relative L2 error | $\frac{\|Q_{\text{PINN}} - Q_{\text{CFD}}\|_2}{\|Q_{\text{CFD}}\|_2}$ |
+| Relative L2 error | $\\|Q_{\text{PINN}} - Q_{\text{CFD}}\\|_2 / \\|Q_{\text{CFD}}\\|_2$ |
 
 ---
 
