@@ -3,18 +3,10 @@ eval.py
 -------
 Load the best saved PINN checkpoint and plot the predicted flow fields
 (u, v, p) over the full 2-D domain.  Also loads the COMSOL reference
-solution (Solutio.txt) and plots pointwise L2 error maps so you can
-see where the model deviates most from the reference.
+solution (SolutionCOMSOL.txt) and plots the relative error maps.
 
-Domain  : [0, 1] × [−0.5, 0.5]
+Domain  : [0, 1] x [-0.5, 0.5]
 Cylinder: centre (0.5, 0), radius 0.2  (masked out in plots)
-
-Output figures
---------------
-    comsol_fields.png        — COMSOL reference fields
-    pinn_fields.png          — PINN predicted fields
-    error_fields.png         — pointwise |PINN − COMSOL| error maps
-    eval_streamlines.png     — PINN streamlines
 
 Usage
 -----
@@ -22,7 +14,7 @@ Usage
     python eval.py --ckpt path/to/model.pt  # custom checkpoint
     python eval.py --res 600                # grid resolution (default 400)
     python eval.py --save                   # save figures instead of showing
-    python eval.py --ref  path/to/Solutio.txt
+    python eval.py --ref  path/to/SolutionCOMSOL.txt
 """
 
 import argparse
@@ -39,7 +31,7 @@ from model import PINN
 # ---------------------------------------------------------------------------
 # Domain / geometry constants (must match training)
 # ---------------------------------------------------------------------------
-X_MIN, X_MAX = 0.0, 1.0
+X_MIN, X_MAX = 0.0, 1.2
 Y_MIN, Y_MAX = -0.5, 0.5
 CYL_X, CYL_Y, CYL_R = 0.3, 0.0, 0.08
 
@@ -78,7 +70,7 @@ def build_grid(res: int, device: torch.device):
     xx, yy = np.meshgrid(xs, ys)
 
     dist = np.sqrt((xx - CYL_X)**2 + (yy - CYL_Y)**2)
-    mask = dist > CYL_R                    # True = fluid domain
+    mask = dist > CYL_R                 
 
     xy_flat = np.stack([xx[mask], yy[mask]], axis=1)
     xy_grid = torch.tensor(xy_flat, dtype=torch.float32, device=device)
@@ -114,64 +106,23 @@ def _style_ax(ax, title):
 # COMSOL reference loader
 # ---------------------------------------------------------------------------
 
-def _normalise_pressure(p: np.ndarray, x: np.ndarray,
-                         x_inlet: float = X_MIN, x_outlet: float = X_MAX,
-                         tol: float = 1e-3) -> np.ndarray:
-    """
-    Non-dimensionalise pressure so that it is comparable between the PINN
-    (which solves in non-dimensional form) and COMSOL (which outputs Pa).
-
-    The PINN enforces p=0 at the outlet and its pressure has an arbitrary
-    offset.  COMSOL uses dimensional Pa, so the two fields differ by both
-    an additive constant *and* a multiplicative scale (ρ U²).
-
-    The only scale-invariant comparison is to express pressure as a fraction
-    of the total inlet→outlet pressure drop:
-
-        p_nd = (p - p_outlet_mean) / (p_inlet_mean - p_outlet_mean)
-
-    This gives p_nd ≈ 1 at the inlet and 0 at the outlet for both fields,
-    making the spatial distribution directly comparable regardless of fluid
-    properties or dimensional units.
-    """
-    at_inlet  = x <= x_inlet  + tol
-    at_outlet = x >= x_outlet - tol
-    if at_inlet.sum() == 0 or at_outlet.sum() == 0:
-        # Fallback: zero-mean normalise
-        return (p - p.mean()) / (p.std() + 1e-12)
-    p_in  = float(p[at_inlet].mean())
-    p_out = float(p[at_outlet].mean())
-    dp    = p_in - p_out
-    if abs(dp) < 1e-12:
-        return p - p_out          # flat field — just shift
-    return (p - p_out) / dp
-
-
 def load_comsol(ref_path: str) -> dict:
     """
-    Parse the COMSOL export file (Solutio.txt).
+    Parse the COMSOL export file (SolutionCOMSOL.txt).
     Lines beginning with '%' are comments/headers.
     Columns: x  y  u  v  p  speed
-
-    Pressure is converted to a dimensionless pressure coefficient based on
-    the inlet→outlet pressure drop so it is directly comparable to the PINN
-    output (see _normalise_pressure).
+    Pressure is used as-is (Pa), no normalisation.
     """
     data = np.loadtxt(ref_path, comments="%")
-    x = data[:, 0].astype(np.float32)
-    p = data[:, 4].astype(np.float32)
     out = {
-        "x"    : x,
+        "x"    : data[:, 0].astype(np.float32),
         "y"    : data[:, 1].astype(np.float32),
         "u"    : data[:, 2].astype(np.float32),
         "v"    : data[:, 3].astype(np.float32),
-        "p"    : _normalise_pressure(p, x),
+        "p"    : data[:, 4].astype(np.float32),
         "speed": data[:, 5].astype(np.float32),
     }
     print(f"  COMSOL  : {len(out['x']):,} nodes loaded from {ref_path}")
-    print(f"  COMSOL p: raw range [{p.min():.3e}, {p.max():.3e}] Pa  "
-          f"→ normalised to pressure-coeff range "
-          f"[{out['p'].min():.3f}, {out['p'].max():.3f}]")
     return out
 
 
@@ -195,30 +146,47 @@ def interpolate_comsol(comsol: dict, xx: np.ndarray, yy: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
-# Generic multi-panel contourf helper
+# Plot helpers
 # ---------------------------------------------------------------------------
 
-def _plot_four_fields(fig_title, fields_spec, xx, yy, save_dir, filename):
+# CFD-standard colormaps (COMSOL Rainbow / jet for all fields)
+_CMAP_FIELD = "jet"   # identical to COMSOL default "Rainbow" colormap
+_CMAP_ERR   = "hot_r" # high-contrast sequential for error maps
+
+
+def _contourf_panel(ax, fig, xx, yy, field, cmap, vmin, vmax, title, unit=""):
+    cf = ax.contourf(xx, yy, field, levels=80,
+                     cmap=cmap, vmin=vmin, vmax=vmax, extend="both")
+    cb = fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
+    if unit:
+        cb.set_label(unit, fontsize=8)
+    _style_ax(ax, title)
+
+
+def _plot_comparison(var_label, unit,
+                     pinn_field, cfd_field, abs_err,
+                     xx, yy, save_dir, filename):
     """
-    fields_spec : list of (panel_title, data_array, cmap, symmetric_colorbar)
+    One figure with three side-by-side panels:
+        PINN  |  COMSOL  |  |PINN − CFD|
+    PINN and COMSOL share the same colour scale (driven by COMSOL range).
     """
-    fig, axes = plt.subplots(2, 2, figsize=(16, 9))
-    axes = axes.flatten()
+    fig, axes = plt.subplots(1, 3, figsize=(18, 4))
 
-    for ax, (title, field, cmap, symm) in zip(axes, fields_spec):
-        vmin, vmax = np.nanmin(field), np.nanmax(field)
-        if symm:
-            vlim = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vlim, vlim
+    # Colour scale driven by COMSOL (reference) range
+    vmin = float(np.nanmin(cfd_field))
+    vmax = float(np.nanmax(cfd_field))
 
-        cf = ax.contourf(xx, yy, field, levels=80,
-                         cmap=cmap, vmin=vmin, vmax=vmax, extend="both")
-        fig.colorbar(cf, ax=ax, fraction=0.046, pad=0.04)
-        _style_ax(ax, title)
+    _contourf_panel(axes[0], fig, xx, yy, pinn_field,
+                    _CMAP_FIELD, vmin, vmax, f"PINN — {var_label}", unit)
+    _contourf_panel(axes[1], fig, xx, yy, cfd_field,
+                    _CMAP_FIELD, vmin, vmax, f"COMSOL — {var_label}", unit)
+    err_max = float(np.nanmax(abs_err)) or 1.0
+    _contourf_panel(axes[2], fig, xx, yy, abs_err,
+                    _CMAP_ERR, 0, err_max,
+                    f"|PINN − CFD| — {var_label}", unit)
 
-    plt.suptitle(fig_title, fontsize=14, y=1.01)
     plt.tight_layout()
-
     if save_dir:
         path = os.path.join(save_dir, filename)
         plt.savefig(path, dpi=150, bbox_inches="tight")
@@ -252,30 +220,7 @@ def run_eval(model: PINN, res: int, device: torch.device,
         f[mask] = preds[:, i]
         pinn[key] = f
     pinn["speed"] = np.sqrt(pinn["u"]**2 + pinn["v"]**2)
-
-    # Non-dimensionalise PINN pressure with the same inlet→outlet convention
-    # so it is directly comparable to the normalised COMSOL pressure.
-    pinn_p_flat = pinn["p"][mask]
-    pinn_x_flat = xx[mask]
-    pinn["p"][mask] = _normalise_pressure(pinn_p_flat, pinn_x_flat)
-    print(f"  PINN  p : normalised pressure-coeff range "
-          f"[{np.nanmin(pinn['p']):.3f}, {np.nanmax(pinn['p']):.3f}]")
-
-    # ------------------------------------------------------------------
-    # PINN fields plot
-    # ------------------------------------------------------------------
-    print("  Plotting PINN fields …")
-    _plot_four_fields(
-        "PINN — Steady Navier-Stokes (Re = 1)",
-        [
-            ("u  (x-velocity)",  pinn["u"],     "RdBu_r",  True),
-            ("v  (y-velocity)",  pinn["v"],     "RdBu_r",  True),
-            ("p  (pressure coeff Cp)", pinn["p"], "coolwarm", True),
-            ("speed  ||u||",     pinn["speed"], "viridis",  False),
-        ],
-        xx, yy, save_dir, "pinn_fields.png",
-    )
-
+    
     # ------------------------------------------------------------------
     # PINN streamlines
     # ------------------------------------------------------------------
@@ -310,40 +255,19 @@ def run_eval(model: PINN, res: int, device: torch.device,
         return
 
     print(f"\n  Loading COMSOL reference …")
-    comsol_raw  = load_comsol(ref_path)
+    comsol_raw = load_comsol(ref_path)
     print(f"  Interpolating COMSOL data onto {res}×{res} grid …")
     comsol = interpolate_comsol(comsol_raw, xx, yy, mask)
 
     # ------------------------------------------------------------------
-    # COMSOL fields plot
+    # L2 error metrics (fluid domain only)
     # ------------------------------------------------------------------
-    print("  Plotting COMSOL reference fields …")
-    _plot_four_fields(
-        "COMSOL Reference — Steady Navier-Stokes",
-        [
-            ("u  (x-velocity)",           comsol["u"],     "RdBu_r",  True),
-            ("v  (y-velocity)",           comsol["v"],     "RdBu_r",  True),
-            ("p  (pressure coeff Cp)",   comsol["p"],     "coolwarm", True),
-            ("speed  ||u||",              comsol["speed"], "viridis",  False),
-        ],
-        xx, yy, save_dir, "comsol_fields.png",
-    )
-
-    # ------------------------------------------------------------------
-    # Pointwise absolute error maps
-    # ------------------------------------------------------------------
-    print("  Computing and plotting error maps …")
-    err_u     = np.abs(pinn["u"]     - comsol["u"])
-    err_v     = np.abs(pinn["v"]     - comsol["v"])
-    err_p     = np.abs(pinn["p"]     - comsol["p"])
-    err_speed = np.abs(pinn["speed"] - comsol["speed"])
-
-    # Global L2 metrics (fluid domain only)
     def _l2(a, b):
-        diff = (a - b)[mask]
-        ref  = b[mask]
-        return (np.sqrt(np.nanmean(diff**2)),
-                np.sqrt(np.nanmean(diff**2)) / (np.sqrt(np.nanmean(ref**2)) + 1e-12))
+        diff  = (a - b)[mask]
+        ref   = b[mask]
+        l2    = np.sqrt(np.nanmean(diff**2))
+        rel   = l2 / (np.sqrt(np.nanmean(ref**2)) + 1e-12)
+        return l2, rel
 
     l2_u,     rel_u     = _l2(pinn["u"],     comsol["u"])
     l2_v,     rel_v     = _l2(pinn["v"],     comsol["v"])
@@ -358,15 +282,37 @@ def run_eval(model: PINN, res: int, device: torch.device,
                            ("speed", l2_speed, rel_speed)]:
         print(f"  {name:<12}  {l2:>12.4e}  {rel:>12.4e}")
 
-    _plot_four_fields(
-        "Pointwise |PINN − COMSOL| error",
-        [
-            (f"|Δu|  (L2={l2_u:.3e}, rel={rel_u:.3e})",         err_u,     "Reds", False),
-            (f"|Δv|  (L2={l2_v:.3e}, rel={rel_v:.3e})",         err_v,     "Reds", False),
-            (f"|Δp|  (L2={l2_p:.3e}, rel={rel_p:.3e})",         err_p,     "Reds", False),
-            (f"|Δspeed|  (L2={l2_speed:.3e}, rel={rel_speed:.3e})", err_speed, "Reds", False),
-        ],
-        xx, yy, save_dir, "error_fields.png",
+    # ------------------------------------------------------------------
+    # Pointwise absolute error  |Q_PINN − Q_CFD|
+    # ------------------------------------------------------------------
+    def _abs_err(a, b):
+        err = np.full(xx.shape, float("nan"), dtype=np.float32)
+        err[mask] = np.abs(a - b)[mask]
+        return err
+
+    abs_err_u = _abs_err(pinn["u"], comsol["u"])
+    abs_err_v = _abs_err(pinn["v"], comsol["v"])
+    abs_err_p = _abs_err(pinn["p"], comsol["p"])
+
+    # ------------------------------------------------------------------
+    # Comparison figures: one per variable  (PINN | COMSOL | |PINN−CFD|)
+    # ------------------------------------------------------------------
+    print("  Plotting comparison figures …")
+
+    _plot_comparison(
+        "u  [m/s]", "m/s",
+        pinn["u"], comsol["u"], abs_err_u,
+        xx, yy, save_dir, "comparison_u.png",
+    )
+    _plot_comparison(
+        "v  [m/s]", "m/s",
+        pinn["v"], comsol["v"], abs_err_v,
+        xx, yy, save_dir, "comparison_v.png",
+    )
+    _plot_comparison(
+        "p  [Pa]", "Pa",
+        pinn["p"], comsol["p"], abs_err_p,
+        xx, yy, save_dir, "comparison_p.png",
     )
 
     print("  Done.")
@@ -380,8 +326,8 @@ def parse_args():
     p = argparse.ArgumentParser(description="Evaluate a saved PINN checkpoint.")
     p.add_argument("--ckpt",  default=os.path.join("models", "best_model.pt"),
                    help="Path to .pt checkpoint  (default: models/best_model.pt)")
-    p.add_argument("--ref",   default="Solutio.txt",
-                   help="Path to COMSOL reference file  (default: Solutio.txt)")
+    p.add_argument("--ref",   default="SolutionCOMSOL.txt",
+                   help="Path to COMSOL reference file  (default: SolutionCOMSOL.txt)")
     p.add_argument("--res",   type=int, default=400,
                    help="Grid resolution along each axis  (default: 400)")
     p.add_argument("--save",  action="store_true",

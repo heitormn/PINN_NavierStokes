@@ -2,17 +2,18 @@
 sampling.py
 -----------
 Collocation and boundary-point generation for the 2-D steady Navier-Stokes
-PINN on a [0,1] x [-0.5, 0.5] channel with a circular cylinder of radius 0.2
-centred at (0.5, 0).
+PINN on a [0,1.2] x [-0.5, 0.5] channel with a circular cylinder of radius 0.08
+centred at (0.3, 0).
 
-Interior points are sampled uniformly; adaptive residual-based refinement
-is handled by the training loop (see train.py).
-
+Interior sampling strategy:
+- Uniform random sampling across the entire domain, excluding the cylinder.
+- Adaptive resampling based on PDE residuals: periodically add points in regions where the current model has high errors.
 All points inside the solid cylinder (r <= R_cyl) are rejected.
 """
 
 import numpy as np
 import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Circle
@@ -20,7 +21,7 @@ from matplotlib.patches import Circle
 # ---------------------------------------------------------------------------
 # Problem geometry constants
 # ---------------------------------------------------------------------------
-X_MIN, X_MAX = 0.0, 1.0
+X_MIN, X_MAX = 0.0, 1.2
 Y_MIN, Y_MAX = -0.5, 0.5
 CYL_X, CYL_Y, CYL_R = 0.3, 0.0, 0.08   # cylinder centre and radius
 
@@ -38,7 +39,7 @@ def _outside_cylinder(pts: np.ndarray, safety: float = 1e-3) -> np.ndarray:
 def _sample_uniform(n: int, rng: np.random.Generator) -> np.ndarray:
     """Draw n uniform random points from the bounding box; reject inside cyl."""
     pts = []
-    while len(pts) < n:
+    while sum(len(p) for p in pts) < n:
         batch = rng.uniform(
             [X_MIN, Y_MIN], [X_MAX, Y_MAX],
             size=(n * 3, 2),          # oversample to compensate for rejections
@@ -53,13 +54,12 @@ def _sample_uniform(n: int, rng: np.random.Generator) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def sample_collocation(
-    n_uniform: int = 11500,
+    n_uniform: int = 30000,
     seed: int = 42,
     device: str = "cpu",
 ) -> torch.Tensor:
     """
-    Generate uniform interior collocation points.
-    Adaptive residual-based refinement is done in the training loop.
+    Generate uniform interior collocation points (cylinder excluded).
 
     Parameters
     ----------
@@ -74,6 +74,73 @@ def sample_collocation(
     rng = np.random.default_rng(seed)
     pts = _sample_uniform(n_uniform, rng).astype(np.float32)
     return torch.tensor(pts, dtype=torch.float32, device=device, requires_grad=True)
+
+
+def adaptive_resample(
+    model: nn.Module,
+    xy_col: torch.Tensor,
+    cfg: dict,
+    device: str,
+    epoch: int,
+) -> torch.Tensor:
+    """
+    Residual-guided adaptive resampling.
+
+    Evaluates the PDE residuals on a fresh candidate pool and appends the
+    ``cfg['resample_add']`` highest-error points to the current collocation
+    set, capping the total at ``cfg['resample_max']``.
+
+    Parameters
+    ----------
+    model  : current PINN (any nn.Module that outputs [u, v, p])
+    xy_col : current collocation tensor  [N, 2]  (requires_grad=True)
+    cfg    : config dict with keys: resample_add, resample_max, seed, rho, mu
+    device : torch device string
+    epoch  : current training epoch (used to vary the candidate pool)
+
+    Returns
+    -------
+    xy_col : updated collocation tensor  [N', 2]  (requires_grad=True)
+             If already at cap, the original tensor is returned unchanged.
+    """
+    # Lazy import to avoid circular dependency (model imports sampling)
+    from model import ns_residuals
+
+    n_current = xy_col.shape[0]
+    if n_current >= cfg['resample_max']:
+        return xy_col
+
+    n_add = min(cfg['resample_add'], cfg['resample_max'] - n_current)
+
+    # Draw a fresh candidate pool (5× oversampled for coverage)
+    rng      = np.random.default_rng(cfg['seed'] + epoch)
+    cands_np = _sample_uniform(n_add * 5, rng).astype(np.float32)
+    xy_cand  = torch.tensor(cands_np, dtype=torch.float32,
+                             device=device, requires_grad=True)
+
+    # Evaluate PDE residuals at candidates
+    was_training = model.training
+    model.eval()
+    r_cont, r_xmom, r_ymom = ns_residuals(model, xy_cand,
+                                           rho=cfg['rho'], mu=cfg['mu'])
+    res_mag = (
+        r_cont.detach() ** 2 +
+        r_xmom.detach() ** 2 +
+        r_ymom.detach() ** 2
+    ).squeeze()
+    if was_training:
+        model.train()
+
+    # Select the top-n_add highest-residual candidates
+    _, idx   = torch.topk(res_mag, n_add)
+    selected = cands_np[idx.cpu().numpy()]
+
+    # Merge with existing points and return a fresh requires_grad tensor
+    merged = np.concatenate(
+        [xy_col.detach().cpu().numpy(), selected], axis=0
+    )
+    return torch.tensor(merged, dtype=torch.float32,
+                         device=device, requires_grad=True)
 
 
 # ---------------------------------------------------------------------------
@@ -93,16 +160,13 @@ def sample_inflow(n: int = 200, seed: int = 0, device: str = "cpu") -> torch.Ten
 
 def sample_outflow(n: int = 200, seed: int = 1, device: str = "cpu") -> torch.Tensor:
     """
-    Outflow boundary: x = 1,  y ~ uniform in [Y_MIN, Y_MAX].
-    BC: p = 0,  du/dx = 0,  dv/dx = 0.
-    Returned tensor has requires_grad=True (needed for du/dx residual).
+    Outflow boundary: x = X_MAX (1.2),  y ~ uniform in [Y_MIN, Y_MAX].
+    BC enforced in loss: p_avg = 0,  v = 0  (u·t = 0).
     """
     rng = np.random.default_rng(seed)
     y  = rng.uniform(Y_MIN, Y_MAX, size=(n, 1)).astype(np.float32)
-    x  = np.ones_like(y)
-    return torch.tensor(
-        np.hstack([x, y]), dtype=torch.float32, device=device, requires_grad=True
-    )
+    x  = np.full_like(y, X_MAX)
+    return torch.tensor(np.hstack([x, y]), dtype=torch.float32, device=device)
 
 
 def sample_top_wall(n: int = 150, seed: int = 2, device: str = "cpu") -> torch.Tensor:
@@ -266,15 +330,11 @@ def visualize_points(
 
 
 # ---------------------------------------------------------------------------
-# Quick self-test / demo
+# Small demo when run as a script
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("Generating collocation points …")
-    xy_col = sample_collocation(
-        n_uniform=4000,
-        n_near_cyl=2000,
-        n_wake=1500,
-    )
+    xy_col = sample_collocation(n_uniform=30000)
     print(f"  Interior collocation: {xy_col.shape[0]} pts")
 
     print("Generating boundary points …")
@@ -288,5 +348,8 @@ if __name__ == "__main__":
     for k, v in bc.items():
         print(f"  {k:10s}: {v.shape[0]} pts")
 
-    print("Plotting …")
+    print("\nadaptive_resample is available — import and call it from the")
+    print("training loop with a trained model to add high-residual points.")
+
+    print("\nPlotting …")
     visualize_points(xy_col, bc)
