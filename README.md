@@ -348,11 +348,13 @@ $\|\mathbf{u}\| = \sqrt{u^2 + v^2}$ colour map. Key features to look for:
 
 ![Comparison u velocity](images/comparison_u.png)
 
-The $u$ field shows the streamwise velocity.
-The boundary layer on the cylinder surface where $u \to 0$ (no-slip) and the
-high-$u$ region flanking the cylinder are the most challenging regions for the
-PINN. The absolute error map highlights any discrepancies concentrated near the
-cylinder surface and the near-wake.
+The $u$ field shows the streamwise velocity. The region with the highest
+output error is typically near the outflow boundary. This is expected because
+small upstream inaccuracies can accumulate as they are convected downstream,
+and the outlet uses a weak pressure-gauge condition rather than a fully
+prescribed velocity profile. Even so, this is still a low-error region in
+absolute terms, and the overall agreement with the reference solution remains
+very good.
 
 ---
 
@@ -361,8 +363,8 @@ cylinder surface and the near-wake.
 ![Comparison v velocity](images/comparison_v.png)
 
 The $v$ (cross-stream) component is antisymmetric about $y=0$ for steady flow.
-The PINN must learn this symmetry implicitly from the loss — no symmetry is
-explicitly enforced. Good agreement here is a useful sanity check.
+The PINN must learn this symmetry implicitly from the loss, no symmetry is
+explicitly enforced.
 
 ---
 
