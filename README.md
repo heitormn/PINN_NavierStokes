@@ -373,9 +373,9 @@ explicitly enforced.
 ![Comparison pressure](images/comparison_p.png)
 
 Pressure is the most challenging output to learn. Key features:
-- **High-pressure stagnation region** at the front of the cylinder.
-- **Low-pressure wake** immediately behind — the pressure difference across the
-  cylinder drives the **drag force**.
+- High-pressure stagnation region* at the front of the cylinder.
+- Low-pressure wake immediately behind, the pressure difference across the
+  cylinder drives the drag force.
 - The PINN has no explicit pressure boundary condition (only $\bar{p}=0$ at
   the outlet as a gauge fix); the entire pressure field must emerge from the
   momentum equations.
