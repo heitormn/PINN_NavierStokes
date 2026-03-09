@@ -199,8 +199,8 @@ Three error metrics are computed per field:
 
 | Metric | Formula |
 |---|---|
-| Absolute L2 error | $\sqrt{\text{mean}(Q_{\text{PINN}} - Q_{\text{CFD}})^2}$ |
-| Relative L2 error | $\\|Q_{\text{PINN}} - Q_{\text{CFD}}\\|_2 / \\|Q_{\text{CFD}}\\|_2$ |
+| Absolute L2 error | √(mean((Q_PINN − Q_CFD)²)) |
+| Relative L2 error | ‖Q_PINN − Q_CFD‖₂ / ‖Q_CFD‖₂ |
 
 ---
 
