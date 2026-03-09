@@ -72,6 +72,7 @@ components and pressure.
 
 All derivatives are computed exactly via automatic differentiation through the neural
 network.
+
 ---
 
 ## 3. Boundary Conditions
