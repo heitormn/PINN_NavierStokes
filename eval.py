@@ -5,8 +5,8 @@ Load the best saved PINN checkpoint and plot the predicted flow fields
 (u, v, p) over the full 2-D domain.  Also loads the COMSOL reference
 solution (SolutionCOMSOL.txt) and plots the relative error maps.
 
-Domain  : [0, 1] x [-0.5, 0.5]
-Cylinder: centre (0.5, 0), radius 0.2  (masked out in plots)
+Domain  : [0, 1.2] x [-0.5, 0.5]
+Cylinder: centre (0.3, 0), radius 0.08  (masked out in plots)
 
 Usage
 -----
