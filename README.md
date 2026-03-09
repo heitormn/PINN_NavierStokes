@@ -26,25 +26,11 @@ simulation data by embedding the governing physics directly into the loss functi
 The problem models **laminar, steady, incompressible 2D flow** past a circular
 cylinder confined inside a rectangular channel.
 
-```mermaid
-flowchart LR
-  IN[Inflow boundary\n`x = 0`\n`u = 0.3(1-4y^2), v = 0`]
-  D1[Upstream region]
-  C[(Cylinder\ncenter `(0.3, 0)`\n`R = 0.08`)]
-  D2[Near wake]
-  OUT[Outflow boundary\n`x = 1.2`\n`p_avg = 0, v = 0`]
-
-  TOP[Top wall\n`y = +0.5`\nno-slip]
-  BOT[Bottom wall\n`y = -0.5`\nno-slip]
-
-  IN --> D1 --> C --> D2 --> OUT
-  TOP --- D1
-  TOP --- C
-  TOP --- D2
-  BOT --- D1
-  BOT --- C
-  BOT --- D2
-```
+<p align="center">
+  <img src="images/geometry_domain.png" alt="Domain geometry" width="500"/>
+  <br>
+  <em>Computational domain: rectangular channel with circular cylinder obstacle</em>
+</p>
 
 | Parameter | Value |
 |---|---|
