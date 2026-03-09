@@ -20,7 +20,7 @@ import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
 from model import PINN, pinn_loss
-from sampling import sample_collocation, sample_all_boundaries
+from sampling import sample_collocation, sample_all_boundaries, adaptive_resample
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -43,6 +43,13 @@ CFG = {
     "n_top"       : 150,
     "n_bot"       : 150,
     "n_cyl"       : 300,
+
+    # Adaptive residual-based collocation resampling
+    "use_adaptive_resampling": True,
+    "resample_every": 2000,
+    "resample_start": 0,
+    "resample_add": 2000,
+    "resample_max": 45000,
 
     # Training
     "epochs"      : 25000,
@@ -220,6 +227,26 @@ def train(cfg: dict = CFG):
         optimiser.step()
         scheduler.step()
 
+        # Periodically add high-residual collocation points.
+        if (
+            cfg.get("use_adaptive_resampling", False)
+            and epoch >= cfg.get("resample_start", 0)
+            and epoch % cfg.get("resample_every", 1) == 0
+        ):
+            n_before = xy_col.shape[0]
+            xy_col = adaptive_resample(
+                model=model,
+                xy_col=xy_col,
+                cfg=cfg,
+                device=device,
+                epoch=epoch,
+            )
+            n_after = xy_col.shape[0]
+            if n_after > n_before:
+                print(
+                    f"  [Adaptive resample] epoch={epoch}  collocation: {n_before:,} -> {n_after:,}"
+                )
+
         epochs_done = epoch
         total_loss  = loss_dict["total"]
 
@@ -228,12 +255,11 @@ def train(cfg: dict = CFG):
             loss_dict["pde/cont"] + loss_dict["pde/xmom"] + loss_dict["pde/ymom"]
         )
         bc_history.append(
-            loss_dict["bc/inflow_u"]     + loss_dict["bc/inflow_v"] +
-            loss_dict["bc/outlet_p"]     + loss_dict["bc/outlet_du_dx"] +
-            loss_dict["bc/outlet_dv_dx"] +
-            loss_dict["bc/top_u"]        + loss_dict["bc/top_v"] +
-            loss_dict["bc/bot_u"]        + loss_dict["bc/bot_v"] +
-            loss_dict["bc/cyl_u"]        + loss_dict["bc/cyl_v"]
+            loss_dict["bc/inflow_u"] + loss_dict["bc/inflow_v"] +
+            loss_dict["bc/outlet_p"] + loss_dict["bc/outlet_v"] +
+            loss_dict["bc/top_u"]   + loss_dict["bc/top_v"] +
+            loss_dict["bc/bot_u"]   + loss_dict["bc/bot_v"] +
+            loss_dict["bc/cyl_u"]   + loss_dict["bc/cyl_v"]
         )
 
         # --- periodic checkpoint ---
@@ -266,8 +292,7 @@ def train(cfg: dict = CFG):
             )
             bc_outlet = (
                 loss_dict["bc/outlet_p"] +
-                loss_dict["bc/outlet_du_dx"] +
-                loss_dict["bc/outlet_dv_dx"]
+                loss_dict["bc/outlet_v"]
             )
             bc_inflow = loss_dict["bc/inflow_u"] + loss_dict["bc/inflow_v"]
             bc_cyl    = loss_dict["bc/cyl_u"] + loss_dict["bc/cyl_v"]
