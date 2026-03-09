@@ -49,24 +49,29 @@ At these Reynolds numbers the flow is fully laminar.
 
 The 2D **steady incompressible Navier-Stokes** equations:
 
-$$\frac{\partial u}{\partial x} + \frac{\partial v}{\partial y} = 0 \qquad \text{(continuity)}$$
+**Continuity:**
 
-$$u\frac{\partial u}{\partial x} + v\frac{\partial u}{\partial y}
-  + \frac{\partial p}{\partial x}
-  - \nu\left(\frac{\partial^2 u}{\partial x^2} + \frac{\partial^2 u}{\partial y^2}\right) = 0
-  \qquad \text{(x-momentum)}$$
+```math
+\frac{\partial u}{\partial x} + \frac{\partial v}{\partial y} = 0
+```
 
-$$u\frac{\partial v}{\partial x} + v\frac{\partial v}{\partial y}
-  + \frac{\partial p}{\partial y}
-  - \nu\left(\frac{\partial^2 v}{\partial x^2} + \frac{\partial^2 v}{\partial y^2}\right) = 0
-  \qquad \text{(y-momentum)}$$
+**x-momentum:**
+
+```math
+u\frac{\partial u}{\partial x} + v\frac{\partial u}{\partial y} + \frac{\partial p}{\partial x} - \nu\left(\frac{\partial^2 u}{\partial x^2} + \frac{\partial^2 u}{\partial y^2}\right) = 0
+```
+
+**y-momentum:**
+
+```math
+u\frac{\partial v}{\partial x} + v\frac{\partial v}{\partial y} + \frac{\partial p}{\partial y} - \nu\left(\frac{\partial^2 v}{\partial x^2} + \frac{\partial^2 v}{\partial y^2}\right) = 0
+```
 
 where $\nu = \mu/\rho$ is the kinematic viscosity and $(u, v, p)$ are the two velocity
 components and pressure.
 
-All derivatives are computed **exactly** via automatic differentiation through the neural
-network — no finite-difference approximations are made.
-
+All derivatives are computed exactly via automatic differentiation through the neural
+network.
 ---
 
 ## 3. Boundary Conditions
@@ -75,15 +80,11 @@ Five boundary segments are enforced during training:
 
 | Boundary | Location | Condition | Description |
 |---|---|---|---|
-| **Inflow** | $x = 0$ | $u = 1,\ v = 0$ (local) / $u = 0.3(1 - 4y^2),\ v = 0$ (Kaggle) | Uniform or parabolic velocity profile |
+| **Inflow** |  $u = 0.3(1 - 4y^2),\ v = 0$ | parabolic velocity profile |
 | **Outflow** | $x = 1.2$ | $\bar{p} = 0,\ v = 0$ | Zero mean pressure; no transverse flow |
 | **Top wall** | $y = +0.5$ | $u = 0,\ v = 0$ | No-slip |
 | **Bottom wall** | $y = -0.5$ | $u = 0,\ v = 0$ | No-slip |
 | **Cylinder surface** | $r = R$ | $u = 0,\ v = 0$ | No-slip |
-
-The **local script** (`train.py` + `model.py`) uses a uniform inflow $u=1$.
-The **Kaggle notebook** uses a physically richer parabolic profile
-$u = 0.3(1 - 4y^2)$ with $U_{\max} = 0.3$ and $U_{\text{avg}} = 0.2$.
 
 ---
 
