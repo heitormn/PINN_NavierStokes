@@ -26,15 +26,24 @@ simulation data by embedding the governing physics directly into the loss functi
 The problem models **laminar, steady, incompressible 2D flow** past a circular
 cylinder confined inside a rectangular channel.
 
-```
- y = +0.5  ████████████████████████████████████████████████
-           →→→                           →→→→→→→→→→→→→→→→→
-           →→→  [cylinder]               →→→→→→→→→→→→→→→→→
-           →→→      ○                    →→→→→→→→→→→→→→→→→
-           →→→                           →→→→→→→→→→→→→→→→→
- y = -0.5  ████████████████████████████████████████████████
-         x=0   x=0.3                              x=1.2
-      (inflow)  (cyl)                           (outflow)
+```mermaid
+flowchart LR
+  IN[Inflow boundary\n`x = 0`\n`u = 0.3(1-4y^2), v = 0`]
+  D1[Upstream region]
+  C[(Cylinder\ncenter `(0.3, 0)`\n`R = 0.08`)]
+  D2[Near wake]
+  OUT[Outflow boundary\n`x = 1.2`\n`p_avg = 0, v = 0`]
+
+  TOP[Top wall\n`y = +0.5`\nno-slip]
+  BOT[Bottom wall\n`y = -0.5`\nno-slip]
+
+  IN --> D1 --> C --> D2 --> OUT
+  TOP --- D1
+  TOP --- C
+  TOP --- D2
+  BOT --- D1
+  BOT --- C
+  BOT --- D2
 ```
 
 | Parameter | Value |
@@ -44,11 +53,9 @@ cylinder confined inside a rectangular channel.
 | Cylinder radius | $R = 0.08$ |
 | Density | $\rho = 1.0\ \text{kg/m}^3$ |
 | Dynamic viscosity | $\mu = 0.01\ \text{Pa·s}$ |
-| Reynolds number (local `train.py`) | $Re = \rho U D / \mu \approx 16$ |
-| Reynolds number (Kaggle notebook) | $Re = \rho U_{\text{avg}} D / \mu \approx 3.2$ |
+| Reynolds number | $Re = \rho U_{\text{avg}} D / \mu \approx 3.2$ |
 
-At these Reynolds numbers the flow is **fully laminar and steady**, so there is a
-unique stable solution — ideal for a steady PINN.
+At these Reynolds numbers the flow is fully laminar.
 
 ---
 

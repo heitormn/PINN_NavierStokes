@@ -26,8 +26,8 @@ class PINN(nn.Module):
             self.layers.append(layer)
             
         # Input normalisation: maps x∈[0,1.2]→[-1,1], y∈[-0.5,0.5]→[-1,1]
-        self.register_buffer('x_mean',  torch.tensor([0.5, 0.0], dtype=torch.float32))
-        self.register_buffer('x_scale', torch.tensor([0.5, 0.5], dtype=torch.float32))
+        self.register_buffer('x_mean',  torch.tensor([0.6, 0.0], dtype=torch.float32))
+        self.register_buffer('x_scale', torch.tensor([0.6, 0.5], dtype=torch.float32))
     def forward(self, x):
         # Normalize inputs to roughly [-1, 1] per dimension
         x = (x - self.x_mean) / self.x_scale
@@ -105,16 +105,16 @@ def ns_residuals(model, xy_col, rho=1.0, mu=0.01):
 # ---------------------------------------------------------------------------
 # Total PINN loss
 # ---------------------------------------------------------------------------
-# Domain   : [0, 1] × [−0.5, 0.5]
-# Geometry : solid circle centred at (0.5, 0) with radius 0.2
+# Domain   : [0, 1.2] × [−0.5, 0.5]
+# Geometry : solid circle centred at (0.3, 0) with radius 0.08
 #
 # Boundary conditions
 # -------------------
-#   Inflow  (x = 0)               : u = 1,  v = 0
-#   Outflow (x = 1)               : p = 0,  ∂u/∂x = 0,  ∂v/∂x = 0
+#   Inflow  (x = 0)               : u = 0.3·(1 − 4y²),  v = 0  (parabolic, U_max=0.3)
+#   Outflow (x = 1.2)             : p_avg = 0,  v = 0
 #   Top wall    (y =  0.5)        : u = 0,  v = 0  (no-slip)
 #   Bottom wall (y = −0.5)        : u = 0,  v = 0  (no-slip)
-#   Circle wall (r = 0.2)         : u = 0,  v = 0  (no-slip)
+#   Cylinder wall (r = 0.08)      : u = 0,  v = 0  (no-slip)
 # ---------------------------------------------------------------------------
 
 def pinn_loss(model, xy_col, xy_in, xy_out, xy_top, xy_bot, xy_cyl, rho=1.0, mu=0.01,
@@ -154,11 +154,13 @@ def pinn_loss(model, xy_col, xy_in, xy_out, xy_top, xy_bot, xy_cyl, rho=1.0, mu=
     loss_ymom  = mse(r_ymom, zeros(r_ymom.shape[0]))
 
     # ------------------------------------------------------------------
-    # 2. Inflow  (x = 0): u = 1, v = 0
+    # 2. Inflow  (x = 0): u = 0.3·(1 − 4y²),  v = 0  (parabolic, U_max=0.3)
     # ------------------------------------------------------------------
-    out_in       = model(xy_in)
-    loss_in_u    = mse(out_in[:, 0:1], torch.ones(xy_in.shape[0], 1, device=xy_in.device))
-    loss_in_v    = mse(out_in[:, 1:2], zeros(xy_in.shape[0]))
+    out_in        = model(xy_in)
+    y_in          = xy_in[:, 1:2]
+    u_in_target   = 0.3 * (1.0 - 4.0 * y_in ** 2)
+    loss_in_u     = mse(out_in[:, 0:1], u_in_target)
+    loss_in_v     = mse(out_in[:, 1:2], zeros(xy_in.shape[0]))
 
     # ------------------------------------------------------------------
     # 3. Outflow (x = 1): p_avg = 0,  v = 0  (u·t = 0)

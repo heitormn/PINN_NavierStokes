@@ -30,10 +30,11 @@ CFG = {
     # Network architecture  [input, hidden..., output]
     'layers'      : [2, 50, 50, 50, 50, 50, 50,50,50, 3],
 
-    # Physics
-    "Re"          : 1.0,
-    "w_pde"       : 1.0,    
-    "w_bc"        : 10,   
+    # Physics (dimensional Navier-Stokes)
+    "rho"         : 1.0,
+    "mu"          : 0.01,
+    "w_pde"       : 1,
+    "w_bc"        : 10,
 
     # Sampling counts
     "n_uniform"   : 30000,
@@ -130,7 +131,7 @@ def train(cfg: dict = CFG):
     os.makedirs(cfg["models_dir"], exist_ok=True)
 
     print(f"\n{'='*65}")
-    print(f"  Navier-Stokes PINN  |  Re={cfg['Re']}  |  device={device}")
+    print(f"  Navier-Stokes PINN  |  rho={cfg['rho']}  mu={cfg['mu']}  |  device={device}")
     print(f"{'='*65}\n")
 
     # ------------------------------------------------------------------
@@ -207,7 +208,8 @@ def train(cfg: dict = CFG):
         loss, loss_dict = pinn_loss(
             model,
             xy_col, xy_in, xy_out, xy_top, xy_bot, xy_cyl,
-            Re    = cfg["Re"],
+            rho   = cfg["rho"],
+            mu    = cfg["mu"],
             w_pde = cfg["w_pde"],
             w_bc  = cfg["w_bc"],
         )
